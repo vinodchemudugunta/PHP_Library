@@ -12,6 +12,13 @@ class Blueprint
     protected static $defaultPrimary = ['id'];
 
     /**
+     * Database to blueprint.
+     *
+     * @var string
+     */
+    public $db_name;
+
+    /**
      * Table to blueprint.
      *
      * @var string
@@ -47,18 +54,18 @@ class Blueprint
     protected $currentColumn = [];
 
     /**
-     * The columns that need be synchronized.
+     * The operations after line anonymized.
      *
      * @var array
      */
-    public $synchroColumns = [];
+    public $after = [];
 
     /**
-     * Names of triggers created.
+     * Tables the current table depend on.
      *
      * @var array
      */
-    public $triggers = [];
+    public $dependencies = [];
 
     /**
      * Callback that builds blueprint.
@@ -73,9 +80,10 @@ class Blueprint
      * @param string        $table
      * @param callable|null $callback
      */
-    public function __construct($table, callable $callback)
+    public function __construct($table, $db_name, callable $callback = NULL)
     {
         $this->table = $table;
+        $this->$db_name = $db_name;
         $this->callback = $callback;
     }
 
@@ -141,7 +149,7 @@ class Blueprint
      *
      * @param callable|string $callback
      *
-     * @return void
+     * @return $this
      */
     public function replaceWith($callback)
     {
@@ -156,23 +164,56 @@ class Blueprint
      * A simple method to set data with generator
      *
      * @param string  $data_type
+     * @param array   $parameters
      * @param boolean $is_unique
+     * @param boolean $is_optional
+     * @param mixed   $default_value
+     * @param decimal $optional_weight
+     *
+     * @return $this
+     */
+    public function replaceWithGenerator($data_type, $parameters = [], $is_unique = false, $is_optional = false, $default_value = null, $optional_weight = null)
+    {
+        $closure = function ($generator) use($data_type, $parameters, $is_unique, $is_optional, $default_value, $optional_weight) {
+            $final_generator = $generator;
+            if ($is_unique) {
+                $final_generator = $final_generator->unique();
+            }
+            if ($is_optional) {
+                if ($default_value && $optional_weight) {
+                    $final_generator = $final_generator->optional($weight = $optional_weight, $default = $default_value);
+                } elseif ($default_value) {
+                    $final_generator = $final_generator->optional($default = $default_value);
+                } elseif ($optional_weight) {
+                    $final_generator = $final_generator->optional($weight = $optional_weight);
+                } else {
+                    $final_generator = $final_generator->optional();
+                }
+            }
+
+            if (empty($parameters)) {
+                return $final_generator->$data_type;
+            }
+            return $final_generator->$data_type(...$parameters);
+        };
+
+        return $this->replaceWith($closure);
+    }
+
+    /**
+     * Do whatever after the anonymization of every line
+     *
+     * @param callable|string $callback
      *
      * @return void
      */
-    public function replaceWithGenerator($data_type, $is_unique = false)
+    public function doAfterUpdate($callback, $dependencies = [])
     {
-        if($is_unique) {
-            $closure = function ($generator) use($data_type) {
-                return $generator->unique()->$data_type;
-            };
-        } else {
-            $closure = function ($generator) use($data_type) {
-                return $generator->$data_type;
-            };
+        $this->after[] = $callback;
+        if ($index = array_search($this->table, $dependencies)) {
+            unset($dependencies[$index]);
         }
-
-        return $this->replaceWith($closure);
+        $this->dependencies = array_unique(array_merge($dependencies, $this->dependencies));
     }
 
     /**
@@ -180,24 +221,31 @@ class Blueprint
      *
      * @param array $synchroData
      *
-     * @return void
+     * @return $this
      */
     public function synchronizeColumn()
     {
         $synchroData = (array) func_get_args();
-
-        if (!isset($this->synchroColumns[$this->currentColumn['name']])) {
-            $this->synchroColumns[$this->currentColumn['name']] = [];
-        }
+        $synchroColumns = [];
+        $currentColumn = $this->currentColumn['name'];
 
         foreach ($synchroData as $synchroField) {
-            $this->synchroColumns[$this->currentColumn['name']][] = [
-                'field'           => $synchroField[0],
-                'table'           => $synchroField[1] ?? $this->table,
-                'database'        => $synchroField[2] ?? null,
-            ];
+            if (!empty($synchroField)) {
+                $synchroColumns[] = [
+                    'field' => $synchroField[0],
+                    'table' => $synchroField[1] ?? $currentColumn,
+                ];
+            }
         }
-
+        $this->doAfterUpdate(function ($rowDataBefore, $rowDataAfter, $generator) use ($synchroColumns, $currentColumn) {
+            $queries = [];
+            foreach ($synchroColumns as $synchroColumn) {
+                $rowDataBefore[$currentColumn] = addslashes($rowDataBefore[$currentColumn]);
+                $rowDataAfter[$currentColumn] = addslashes($rowDataAfter[$currentColumn]);
+                $queries[] = "UPDATE {$synchroColumn['table']} SET {$synchroColumn['field']} = '{$rowDataAfter[$currentColumn]}' WHERE {$synchroColumn['field']} = '{$rowDataBefore[$currentColumn]}'";
+            }
+            return $queries;
+        }, array_unique(array_column($synchroColumns, 'table')));
         return $this;
     }
 
@@ -224,7 +272,9 @@ class Blueprint
     {
         $callback = $this->callback;
 
-        $callback($this);
+        if (is_callable($callback)) {
+            $callback($this);
+        }
 
         if (is_null($this->primary)) {
             $this->primary = self::$defaultPrimary;
