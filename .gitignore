@@ -1,5 +1,5 @@
 # Folder config file
-**/config/*
+**/config/config.php
 
 # Don't commit composer lock file
 **/composer.lock
@@ -8,13 +8,8 @@
 **/vendor/*
 **/vendor
 
-# Don't commit workspace
-**/workspace/*
-
 /src/providers/*
 /src/helpers/*
 
-!/src/helpers/.gitkeep
+!/src/helpers/GeneralHelper.php
 !/src/providers/.gitkeep
-!/workspace/.gitkeep
-!/config/.gitkeep
